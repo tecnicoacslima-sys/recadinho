@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recadinho Térmico</title>
+<style>
+  :root{--bg:#f4f6f8;--card:#fff;--txt:#1d2433;--sub:#5b6577;--pri:#0f7b6c;--pri2:#0b5e53;--bd:#d8dee6;--err:#b3261e}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  header{background:var(--pri);color:#fff;padding:14px 16px}
+  header h1{margin:0;font-size:1.15rem}
+  header small{opacity:.85}
+  main{max-width:520px;margin:0 auto;padding:14px 16px 40px}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px}
+  label{display:block;font-size:.85rem;color:var(--sub);margin:8px 0 4px}
+  input,textarea,select{width:100%;padding:10px;border:1px solid var(--bd);border-radius:8px;font-size:1rem;font-family:inherit}
+  textarea{min-height:120px;resize:vertical}
+  button{width:100%;padding:13px;border:0;border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer;margin-top:8px}
+  .pri{background:var(--pri);color:#fff}.pri:active{background:var(--pri2)}
+  .sec{background:#e7ecf1;color:var(--txt)}
+  button:disabled{opacity:.5}
+  #status{font-weight:600;margin:0}
+  .ok{color:var(--pri)}.bad{color:var(--err)}
+  .prev{display:flex;justify-content:center;background:#e9ecef;padding:10px;border-radius:8px}
+  canvas{width:100%;max-width:288px;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+  details{font-size:.8rem;color:var(--sub)}
+  pre{white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto;background:#111;color:#9fe;padding:8px;border-radius:6px}
+  .row{display:flex;gap:8px}.row>*{flex:1}
+</style>
+</head>
+<body>
+<header>
+  <h1>🧾 Recadinho Térmico</h1>
+  <small>Impressora SC03h · 57 mm</small>
+</header>
+<main>
+  <div class="card">
+    <p id="status" class="bad">● Desconectada</p>
+    <button id="btnCon" class="pri">Conectar impressora</button>
+  </div>
+
+  <div class="card">
+    <label for="cab">Cabeçalho (fica salvo)</label>
+    <input id="cab" value="ESF Flor do Cerrado">
+    <div class="row">
+      <div><label for="pac">Paciente (opcional)</label><input id="pac"></div>
+      <div><label for="apac">Nº APAC (opcional)</label><input id="apac" inputmode="numeric"></div>
+    </div>
+    <label for="msg">Recado</label>
+    <textarea id="msg" placeholder="Digite o recado aqui..."></textarea>
+    <div class="row">
+      <div>
+        <label for="fonte">Tamanho da letra</label>
+        <select id="fonte"><option value="22">Pequena</option><option value="26" selected>Média</option><option value="32">Grande</option></select>
+      </div>
+      <div>
+        <label for="int">Intensidade</label>
+        <select id="int"><option value="8000">Clara</option><option value="12000" selected>Normal</option><option value="18000">Escura</option></select>
+      </div>
+    </div>
+    <button id="btnPrint" class="pri" disabled>Imprimir</button>
+    <button id="btnTeste" class="sec" disabled>Imprimir teste</button>
+  </div>
+
+  <div class="card">
+    <label>Pré-visualização</label>
+    <div class="prev"><canvas id="cv" width="384" height="100"></canvas></div>
+  </div>
+
+  <details class="card">
+    <summary>Diagnóstico (para enviar ao Claude se der erro)</summary>
+    <pre id="log"></pre>
+  </details>
+</main>
+
+<script>
+const W = 384; // 48 mm úteis a 203 dpi
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+function log(...a){ logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+
+// ---------- Salva o cabeçalho ----------
+try { const c = localStorage.getItem('cab'); if (c) $('cab').value = c; } catch(e){}
+$('cab').addEventListener('input', () => { try { localStorage.setItem('cab', $('cab').value); } catch(e){} });
+
+// ---------- Protocolo "cat printer" ----------
+const CRC = (() => { const t = new Uint8Array(256); for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = (c & 0x80) ? ((c << 1) ^ 0x07) & 0xff : (c << 1) & 0xff; t[i] = c; } return t; })();
+const crc8 = d => { let c = 0; for (const b of d) c = CRC[(c ^ b) & 0xff]; return c; };
+const pkt = (cmd, data) => new Uint8Array([0x51, 0x78, cmd, 0x00, data.length & 0xff, data.length >> 8, ...data, crc8(data), 0xff]);
+const u16 = n => [n & 0xff, (n >> 8) & 0xff];
+
+const CMD = {
+  estado:    () => pkt(0xA3, [0x00]),
+  qualidade: () => pkt(0xA4, [0x33]),
+  energia:  e => pkt(0xAF, u16(e)),
+  aplicar:   () => pkt(0xBE, [0x01]),
+  atualizar: () => pkt(0xA9, [0x00]),
+  velocidade: v => pkt(0xBD, [v]),
+  latIni:    () => pkt(0xA6, [0xAA,0x55,0x17,0x38,0x44,0x5F,0x5F,0x5F,0x44,0x38,0x2C]),
+  latFim:    () => pkt(0xA6, [0xAA,0x55,0x17,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x17]),
+  linha:   bytes => pkt(0xA2, bytes),
+  avancar:   n => pkt(0xA1, u16(n)),
+};
+
+// ---------- Bluetooth ----------
+let dev = null, txChar = null, pausado = false, chunk = 180;
+const SERVICOS = [0xAE30, 0xAF30, 0xFF00, 0xFFE0, 0x18F0];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function conectar(){
+  if (!navigator.bluetooth) { alert('Este navegador não tem Bluetooth web. Use o Google Chrome no Android.'); return; }
+  try {
+    dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICOS });
+    log('Dispositivo:', dev.name);
+    dev.addEventListener('gattserverdisconnected', () => { setStatus(false); log('Desconectou.'); });
+    const srv = await dev.gatt.connect();
+    const servicos = await srv.getPrimaryServices();
+    txChar = null;
+    for (const s of servicos) {
+      log('Serviço', s.uuid);
+      for (const c of await s.getCharacteristics()) {
+        const p = c.properties;
+        log('  carac.', c.uuid, p.write ? 'write' : '', p.writeWithoutResponse ? 'writeNR' : '', p.notify ? 'notify' : '');
+        if (!txChar && (c.uuid.startsWith('0000ae01') || c.uuid.startsWith('0000ff02')) && (p.write || p.writeWithoutResponse)) txChar = c;
+        if (p.notify && (c.uuid.startsWith('0000ae02') || c.uuid.startsWith('0000ff01'))) {
+          try {
+            await c.startNotifications();
+            c.addEventListener('characteristicvaluechanged', ev => {
+              const v = new Uint8Array(ev.target.value.buffer);
+              // 51 78 AE 01 01 00 10 70 FF = pausa / ...00... = continua
+              if (v[2] === 0xAE) pausado = v[6] === 0x10;
+              log('<-', [...v].map(b => b.toString(16).padStart(2,'0')).join(' '));
+            });
+          } catch(e){ log('notify falhou', e.message); }
+        }
+      }
+    }
+    if (!txChar) { log('ERRO: não achei a característica de escrita.'); alert('Conectou, mas não reconheci o modelo. Abra "Diagnóstico" e me mande o texto.'); return; }
+    log('Escrevendo em', txChar.uuid);
+    setStatus(true);
+  } catch(e) { log('Erro ao conectar:', e.message); alert('Não conectou: ' + e.message); }
+}
+
+function setStatus(on){
+  $('status').textContent = on ? '● Conectada: ' + (dev?.name || '') : '● Desconectada';
+  $('status').className = on ? 'ok' : 'bad';
+  $('btnPrint').disabled = $('btnTeste').disabled = !on;
+  $('btnCon').textContent = on ? 'Reconectar' : 'Conectar impressora';
+}
+
+async function enviar(bytes){
+  for (let i = 0; i < bytes.length; i += chunk) {
+    while (pausado) await sleep(50);
+    const parte = bytes.slice(i, i + chunk);
+    try {
+      if (txChar.properties.writeWithoutResponse) await txChar.writeValueWithoutResponse(parte);
+      else await txChar.writeValue(parte);
+    } catch(e) {
+      if (chunk > 20) { log('Pacote grande falhou, usando 20 bytes'); chunk = 20; i -= chunk; continue; }
+      throw e;
+    }
+  }
+}
+
+// ---------- Desenho do cupom ----------
+function quebrar(ctx, texto, larg){
+  const linhas = [];
+  for (const par of texto.split('\n')) {
+    if (!par.trim()) { linhas.push(''); continue; }
+    let atual = '';
+    for (const pal of par.split(/\s+/)) {
+      const t = atual ? atual + ' ' + pal : pal;
+      if (ctx.measureText(t).width <= larg) atual = t;
+      else { if (atual) linhas.push(atual); atual = pal; }
+    }
+    linhas.push(atual);
+  }
+  return linhas;
+}
+
+function desenhar(teste){
+  const cv = $('cv'), ctx = cv.getContext('2d');
+  const fs = +$('fonte').value, m = 8, larg = W - m * 2;
+  const agora = new Date();
+  const dataHora = agora.toLocaleDateString('pt-BR') + '  ' + agora.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+  const blocos = [];
+  if (teste) {
+    blocos.push(['b', 30, 'TESTE OK!']);
+    blocos.push(['n', 22, 'Se você está lendo isto, o app conversa com a impressora.']);
+    blocos.push(['n', 22, dataHora]);
+  } else {
+    if ($('cab').value.trim()) blocos.push(['b', fs + 2, $('cab').value.trim()]);
+    blocos.push(['n', fs - 4, dataHora]);
+    blocos.push(['hr']);
+    if ($('pac').value.trim()) blocos.push(['b', fs, 'Paciente: ' + $('pac').value.trim()]);
+    if ($('apac').value.trim()) blocos.push(['b', fs, 'APAC: ' + $('apac').value.trim()]);
+    if ($('pac').value.trim() || $('apac').value.trim()) blocos.push(['sp']);
+    blocos.push(['n', fs, $('msg').value || '(recado vazio)']);
+  }
+  // mede altura
+  const prep = []; let h = m;
+  for (const b of blocos) {
+    if (b[0] === 'hr') { prep.push(b); h += 14; continue; }
+    if (b[0] === 'sp') { prep.push(b); h += 8; continue; }
+    ctx.font = (b[0] === 'b' ? 'bold ' : '') + b[1] + 'px Arial, sans-serif';
+    const ls = quebrar(ctx, b[2], larg);
+    prep.push([b[0], b[1], ls]); h += ls.length * Math.round(b[1] * 1.25) + 4;
+  }
+  h += m;
+  cv.height = h;
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, h);
+  ctx.fillStyle = '#000'; ctx.textBaseline = 'top';
+  let y = m;
+  for (const b of prep) {
+    if (b[0] === 'hr') { ctx.fillRect(m, y + 5, larg, 2); y += 14; continue; }
+    if (b[0] === 'sp') { y += 8; continue; }
+    ctx.font = (b[0] === 'b' ? 'bold ' : '') + b[1] + 'px Arial, sans-serif';
+    for (const l of b[2]) { ctx.fillText(l, m, y); y += Math.round(b[1] * 1.25); }
+    y += 4;
+  }
+  return cv;
+}
+
+function bitmapLinhas(cv){
+  const ctx = cv.getContext('2d');
+  const px = ctx.getImageData(0, 0, W, cv.height).data;
+  const linhas = [];
+  for (let y = 0; y < cv.height; y++) {
+    const row = new Uint8Array(W / 8);
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const lum = 0.299 * px[i] + 0.587 * px[i+1] + 0.114 * px[i+2];
+      if (lum < 128) row[x >> 3] |= 1 << (x & 7); // bit menos significativo primeiro
+    }
+    linhas.push(row);
+  }
+  return linhas;
+}
+
+async function imprimir(teste){
+  if (!txChar) return;
+  const b1 = $('btnPrint'), b2 = $('btnTeste');
+  b1.disabled = b2.disabled = true;
+  try {
+    const cv = desenhar(teste);
+    const linhas = bitmapLinhas(cv);
+    log('Imprimindo', linhas.length, 'linhas');
+    const partes = [CMD.estado(), CMD.qualidade(), CMD.energia(+$('int').value), CMD.aplicar(), CMD.atualizar(), CMD.velocidade(32), CMD.latIni()];
+    for (const p of partes) await enviar(p);
+    let buf = [];
+    for (let i = 0; i < linhas.length; i++) {
+      buf.push(...CMD.linha(linhas[i]));
+      if (buf.length >= chunk * 4 || i === linhas.length - 1) { await enviar(new Uint8Array(buf)); buf = []; await sleep(15); }
+    }
+    for (const p of [CMD.latFim(), CMD.avancar(90), CMD.velocidade(8), CMD.estado()]) await enviar(p);
+    log('Enviado.');
+    if (!teste) { $('msg').value = ''; $('pac').value = ''; $('apac').value = ''; desenhar(false); }
+  } catch(e) { log('Erro ao imprimir:', e.message); alert('Erro: ' + e.message); }
+  b1.disabled = b2.disabled = false;
+}
+
+$('btnCon').onclick = conectar;
+$('btnPrint').onclick = () => imprimir(false);
+$('btnTeste').onclick = () => imprimir(true);
+['cab','pac','apac','msg','fonte'].forEach(id => $(id).addEventListener('input', () => desenhar(false)));
+desenhar(false);
+</script>
+</body>
+</html>
