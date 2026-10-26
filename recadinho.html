@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Recadinho Térmico</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <style>
   :root{--bg:#f4f6f8;--card:#fff;--txt:#1d2433;--sub:#5b6577;--pri:#0f7b6c;--pri2:#0b5e53;--bd:#d8dee6;--err:#b3261e}
   *{box-sizing:border-box}
@@ -13,9 +14,12 @@
   header small{opacity:.85}
   main{max-width:520px;margin:0 auto;padding:14px 16px 40px}
   .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px}
+  .card h2{font-size:.95rem;margin:0 0 4px}
   label{display:block;font-size:.85rem;color:var(--sub);margin:8px 0 4px}
   input,textarea,select{width:100%;padding:10px;border:1px solid var(--bd);border-radius:8px;font-size:1rem;font-family:inherit}
   textarea{min-height:120px;resize:vertical}
+  .chk{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:.95rem;color:var(--txt)}
+  .chk input{width:22px;height:22px;flex:none}
   button{width:100%;padding:13px;border:0;border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer;margin-top:8px}
   .pri{background:var(--pri);color:#fff}.pri:active{background:var(--pri2)}
   .sec{background:#e7ecf1;color:var(--txt)}
@@ -27,6 +31,7 @@
   details{font-size:.8rem;color:var(--sub)}
   pre{white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto;background:#111;color:#9fe;padding:8px;border-radius:6px}
   .row{display:flex;gap:8px}.row>*{flex:1}
+  .aviso{font-size:.8rem;color:var(--err);margin:4px 0 0}
 </style>
 </head>
 <body>
@@ -49,6 +54,7 @@
     </div>
     <label for="msg">Recado</label>
     <textarea id="msg" placeholder="Digite o recado aqui..."></textarea>
+    <label class="chk"><input type="checkbox" id="usarQr"> Incluir QR Code da lista de espera</label>
     <div class="row">
       <div>
         <label for="fonte">Tamanho da letra</label>
@@ -60,7 +66,19 @@
       </div>
     </div>
     <button id="btnPrint" class="pri" disabled>Imprimir</button>
+    <button id="btnSoQr" class="sec" disabled>Imprimir só o QR Code</button>
     <button id="btnTeste" class="sec" disabled>Imprimir teste</button>
+  </div>
+
+  <div class="card">
+    <h2>QR Code da lista de espera</h2>
+    <label for="qrLink">Link (fica salvo)</label>
+    <input id="qrLink" placeholder="Cole aqui o link da lista de espera" inputmode="url">
+    <label for="qrTxt">Frase acima do QR (fica salva)</label>
+    <input id="qrTxt" value="Acompanhe sua APAC na lista de espera:">
+    <label for="qrTam">Tamanho do QR</label>
+    <select id="qrTam"><option value="160">Pequeno</option><option value="220" selected>Médio</option><option value="300">Grande</option></select>
+    <p id="qrAviso" class="aviso"></p>
   </div>
 
   <div class="card">
@@ -80,9 +98,20 @@ const $ = id => document.getElementById(id);
 const logEl = $('log');
 function log(...a){ logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = logEl.scrollHeight; }
 
-// ---------- Salva o cabeçalho ----------
-try { const c = localStorage.getItem('cab'); if (c) $('cab').value = c; } catch(e){}
-$('cab').addEventListener('input', () => { try { localStorage.setItem('cab', $('cab').value); } catch(e){} });
+// ---------- Campos que ficam salvos ----------
+const SALVOS = ['cab', 'qrLink', 'qrTxt', 'qrTam', 'usarQr'];
+for (const id of SALVOS) {
+  const el = $(id);
+  try {
+    const v = localStorage.getItem('rt_' + id);
+    if (v !== null) { if (el.type === 'checkbox') el.checked = v === '1'; else el.value = v; }
+  } catch(e){}
+  el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', () => {
+    try { localStorage.setItem('rt_' + id, el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value); } catch(e){}
+  });
+}
+// compatibilidade com a versão anterior
+try { const c = localStorage.getItem('cab'); if (c && localStorage.getItem('rt_cab') === null) $('cab').value = c; } catch(e){}
 
 // ---------- Protocolo "cat printer" ----------
 const CRC = (() => { const t = new Uint8Array(256); for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = (c & 0x80) ? ((c << 1) ^ 0x07) & 0xff : (c << 1) & 0xff; t[i] = c; } return t; })();
@@ -128,7 +157,6 @@ async function conectar(){
             await c.startNotifications();
             c.addEventListener('characteristicvaluechanged', ev => {
               const v = new Uint8Array(ev.target.value.buffer);
-              // 51 78 AE 01 01 00 10 70 FF = pausa / ...00... = continua
               if (v[2] === 0xAE) pausado = v[6] === 0x10;
               log('<-', [...v].map(b => b.toString(16).padStart(2,'0')).join(' '));
             });
@@ -145,7 +173,7 @@ async function conectar(){
 function setStatus(on){
   $('status').textContent = on ? '● Conectada: ' + (dev?.name || '') : '● Desconectada';
   $('status').className = on ? 'ok' : 'bad';
-  $('btnPrint').disabled = $('btnTeste').disabled = !on;
+  $('btnPrint').disabled = $('btnTeste').disabled = $('btnSoQr').disabled = !on;
   $('btnCon').textContent = on ? 'Reconectar' : 'Conectar impressora';
 }
 
@@ -161,6 +189,25 @@ async function enviar(bytes){
       throw e;
     }
   }
+}
+
+// ---------- QR Code ----------
+function gerarQr(texto){
+  if (typeof qrcode === 'undefined') return null;
+  try {
+    qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8'];
+    const qr = qrcode(0, 'M');
+    qr.addData(texto);
+    qr.make();
+    return qr;
+  } catch(e) { log('Erro no QR:', e.message); return null; }
+}
+
+function atualizarAvisoQr(){
+  const a = $('qrAviso');
+  if (typeof qrcode === 'undefined') a.textContent = 'Gerador de QR não carregou. Verifique a internet e recarregue a página.';
+  else if (!$('qrLink').value.trim()) a.textContent = 'Cole o link para poder imprimir o QR Code.';
+  else a.textContent = '';
 }
 
 // ---------- Desenho do cupom ----------
@@ -179,16 +226,29 @@ function quebrar(ctx, texto, larg){
   return linhas;
 }
 
-function desenhar(teste){
+// modo: 'recado' | 'qr' | 'teste'
+function desenhar(modo){
   const cv = $('cv'), ctx = cv.getContext('2d');
   const fs = +$('fonte').value, m = 8, larg = W - m * 2;
   const agora = new Date();
   const dataHora = agora.toLocaleDateString('pt-BR') + '  ' + agora.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+  const link = $('qrLink').value.trim();
   const blocos = [];
-  if (teste) {
+  const addQr = () => {
+    const qr = link ? gerarQr(link) : null;
+    if (!qr) return;
+    if ($('qrTxt').value.trim()) blocos.push(['c', fs - 2, $('qrTxt').value.trim()]);
+    blocos.push(['qr', qr]);
+  };
+
+  if (modo === 'teste') {
     blocos.push(['b', 30, 'TESTE OK!']);
     blocos.push(['n', 22, 'Se você está lendo isto, o app conversa com a impressora.']);
     blocos.push(['n', 22, dataHora]);
+  } else if (modo === 'qr') {
+    if ($('cab').value.trim()) blocos.push(['cb', fs + 2, $('cab').value.trim()]);
+    blocos.push(['sp']);
+    addQr();
   } else {
     if ($('cab').value.trim()) blocos.push(['b', fs + 2, $('cab').value.trim()]);
     blocos.push(['n', fs - 4, dataHora]);
@@ -197,13 +257,23 @@ function desenhar(teste){
     if ($('apac').value.trim()) blocos.push(['b', fs, 'APAC: ' + $('apac').value.trim()]);
     if ($('pac').value.trim() || $('apac').value.trim()) blocos.push(['sp']);
     blocos.push(['n', fs, $('msg').value || '(recado vazio)']);
+    if ($('usarQr').checked) { blocos.push(['hr']); addQr(); }
   }
+
   // mede altura
+  const qrAlvo = +$('qrTam').value;
   const prep = []; let h = m;
   for (const b of blocos) {
     if (b[0] === 'hr') { prep.push(b); h += 14; continue; }
     if (b[0] === 'sp') { prep.push(b); h += 8; continue; }
-    ctx.font = (b[0] === 'b' ? 'bold ' : '') + b[1] + 'px Arial, sans-serif';
+    if (b[0] === 'qr') {
+      const n = b[1].getModuleCount();
+      const mod = Math.max(2, Math.floor(qrAlvo / n));
+      const lado = mod * n;
+      prep.push(['qr', b[1], mod, lado]); h += lado + 10; continue;
+    }
+    const negrito = b[0] === 'b' || b[0] === 'cb';
+    ctx.font = (negrito ? 'bold ' : '') + b[1] + 'px Arial, sans-serif';
     const ls = quebrar(ctx, b[2], larg);
     prep.push([b[0], b[1], ls]); h += ls.length * Math.round(b[1] * 1.25) + 4;
   }
@@ -215,10 +285,21 @@ function desenhar(teste){
   for (const b of prep) {
     if (b[0] === 'hr') { ctx.fillRect(m, y + 5, larg, 2); y += 14; continue; }
     if (b[0] === 'sp') { y += 8; continue; }
-    ctx.font = (b[0] === 'b' ? 'bold ' : '') + b[1] + 'px Arial, sans-serif';
-    for (const l of b[2]) { ctx.fillText(l, m, y); y += Math.round(b[1] * 1.25); }
+    if (b[0] === 'qr') {
+      const [, qr, mod, lado] = b;
+      const x0 = Math.floor((W - lado) / 2), n = qr.getModuleCount();
+      for (let r = 0; r < n; r++) for (let c = 0; c < n; c++)
+        if (qr.isDark(r, c)) ctx.fillRect(x0 + c * mod, y + r * mod, mod, mod);
+      y += lado + 10; continue;
+    }
+    const centro = b[0] === 'c' || b[0] === 'cb';
+    const negrito = b[0] === 'b' || b[0] === 'cb';
+    ctx.font = (negrito ? 'bold ' : '') + b[1] + 'px Arial, sans-serif';
+    ctx.textAlign = centro ? 'center' : 'left';
+    for (const l of b[2]) { ctx.fillText(l, centro ? W / 2 : m, y); y += Math.round(b[1] * 1.25); }
     y += 4;
   }
+  ctx.textAlign = 'left';
   return cv;
 }
 
@@ -231,19 +312,23 @@ function bitmapLinhas(cv){
     for (let x = 0; x < W; x++) {
       const i = (y * W + x) * 4;
       const lum = 0.299 * px[i] + 0.587 * px[i+1] + 0.114 * px[i+2];
-      if (lum < 128) row[x >> 3] |= 1 << (x & 7); // bit menos significativo primeiro
+      if (lum < 128) row[x >> 3] |= 1 << (x & 7);
     }
     linhas.push(row);
   }
   return linhas;
 }
 
-async function imprimir(teste){
+async function imprimir(modo){
   if (!txChar) return;
-  const b1 = $('btnPrint'), b2 = $('btnTeste');
-  b1.disabled = b2.disabled = true;
+  if (modo === 'qr' || (modo === 'recado' && $('usarQr').checked)) {
+    if (!$('qrLink').value.trim()) { alert('Cole o link da lista de espera no campo do QR Code.'); return; }
+    if (typeof qrcode === 'undefined') { alert('O gerador de QR não carregou. Verifique a internet e recarregue a página.'); return; }
+  }
+  const btns = [$('btnPrint'), $('btnTeste'), $('btnSoQr')];
+  btns.forEach(b => b.disabled = true);
   try {
-    const cv = desenhar(teste);
+    const cv = desenhar(modo);
     const linhas = bitmapLinhas(cv);
     log('Imprimindo', linhas.length, 'linhas');
     const partes = [CMD.estado(), CMD.qualidade(), CMD.energia(+$('int').value), CMD.aplicar(), CMD.atualizar(), CMD.velocidade(32), CMD.latIni()];
@@ -255,16 +340,22 @@ async function imprimir(teste){
     }
     for (const p of [CMD.latFim(), CMD.avancar(90), CMD.velocidade(8), CMD.estado()]) await enviar(p);
     log('Enviado.');
-    if (!teste) { $('msg').value = ''; $('pac').value = ''; $('apac').value = ''; desenhar(false); }
+    if (modo === 'recado') { $('msg').value = ''; $('pac').value = ''; $('apac').value = ''; }
   } catch(e) { log('Erro ao imprimir:', e.message); alert('Erro: ' + e.message); }
-  b1.disabled = b2.disabled = false;
+  btns.forEach(b => b.disabled = false);
+  desenhar('recado');
 }
 
 $('btnCon').onclick = conectar;
-$('btnPrint').onclick = () => imprimir(false);
-$('btnTeste').onclick = () => imprimir(true);
-['cab','pac','apac','msg','fonte'].forEach(id => $(id).addEventListener('input', () => desenhar(false)));
-desenhar(false);
+$('btnPrint').onclick = () => imprimir('recado');
+$('btnSoQr').onclick = () => imprimir('qr');
+$('btnTeste').onclick = () => imprimir('teste');
+['cab','pac','apac','msg','fonte','qrLink','qrTxt','qrTam','usarQr'].forEach(id => {
+  const el = $(id);
+  el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', () => { desenhar('recado'); atualizarAvisoQr(); });
+});
+desenhar('recado');
+atualizarAvisoQr();
 </script>
 </body>
 </html>
