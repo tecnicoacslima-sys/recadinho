@@ -1,16 +1,25 @@
 // Service worker do Recadinho Térmico
 // Busca sempre a versão mais nova na internet; sem internet, usa a cópia salva.
-const CACHE = 'recadinho-v1';
+// Todos os arquivos são locais (nada depende de site externo).
+const CACHE = 'recadinho-v2';
 const ARQUIVOS = [
   './recadinho.html',
   './manifest.json',
+  './qrcode.js',
+  './icon-180.png',
   './icon-192.png',
-  './icon-512.png',
-  'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js'
+  './icon-512.png'
 ];
 
 self.addEventListener('install', ev => {
-  ev.waitUntil(caches.open(CACHE).then(c => c.addAll(ARQUIVOS)).catch(() => {}));
+  // Salva cada arquivo separadamente: se um falhar, os outros continuam salvos.
+  ev.waitUntil(
+    caches.open(CACHE).then(c =>
+      Promise.allSettled(ARQUIVOS.map(url =>
+        fetch(url, { cache: 'no-cache' }).then(resp => { if (resp.ok) return c.put(url, resp); })
+      ))
+    )
+  );
   self.skipWaiting();
 });
 
@@ -26,8 +35,10 @@ self.addEventListener('fetch', ev => {
   ev.respondWith(
     fetch(ev.request)
       .then(resp => {
-        const copia = resp.clone();
-        caches.open(CACHE).then(c => c.put(ev.request, copia)).catch(() => {});
+        if (resp.ok) {
+          const copia = resp.clone();
+          caches.open(CACHE).then(c => c.put(ev.request, copia)).catch(() => {});
+        }
         return resp;
       })
       .catch(() => caches.match(ev.request, { ignoreSearch: true }))
