@@ -1,11 +1,14 @@
 // Service worker do Recadinho Térmico
 // Busca sempre a versão mais nova na internet; sem internet, usa a cópia salva.
 // Todos os arquivos são locais (nada depende de site externo).
-const CACHE = 'recadinho-v2';
+const CACHE = 'recadinho-v4';
 const ARQUIVOS = [
   './recadinho.html',
   './manifest.json',
   './qrcode.js',
+  './pdf.min.js',
+  './pdf.worker.min.js',
+  './jsQR.js',
   './icon-180.png',
   './icon-192.png',
   './icon-512.png'
